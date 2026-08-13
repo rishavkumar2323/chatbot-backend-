@@ -1,12 +1,14 @@
-fastapi
-uvicorn
-pydantic
-pypdf
-langchain
-langchain-community
-langchain-text-splitters
-langchain-huggingface
-langchain-chroma
-langchain-groq
-sentence-transformers
-chromadb
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+streamlit>=1.36
+pypdf>=4.2
+langchain>=0.2
+langchain-community>=0.2
+langchain-text-splitters>=0.2
+langchain-huggingface>=0.0.3
+langchain-chroma>=0.1.2
+langchain-groq>=0.1.6
+sentence-transformers>=3.0
+chromadb>=0.5
+pysqlite3-binary
