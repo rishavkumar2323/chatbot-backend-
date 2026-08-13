@@ -1,146 +1,45 @@
+# --------------------------------------------------------------------------
+# Streamlit Community Cloud ships an old system sqlite3 (< 3.35), but
+# chromadb needs a newer one. This swaps in pysqlite3-binary's sqlite
+# before chromadb (via langchain_chroma) gets imported. Safe to keep for
+# local runs too — it silently no-ops if pysqlite3 isn't installed.
+# --------------------------------------------------------------------------
+try:
+    __import__("pysqlite3")
+    import sys as _sys
+    _sys.modules["sqlite3"] = _sys.modules.pop("pysqlite3")
+except ImportError:
+    pass
+
 import os
+import shutil
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
+import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 
+# --------------------------------------------------------------------------
+# CONFIG
+# --------------------------------------------------------------------------
+st.set_page_config(page_title="Z1 Super App Assistant", page_icon="🤖", layout="wide")
 
-# =========================================================
-# FASTAPI APP
-# =========================================================
+DATA_DIR = "data"
+PDF_PATH = os.path.join(DATA_DIR, "sets_of_miniapp.pdf")
+PERSIST_DIR = "./chroma_db_bge"
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+# NOTE: switched from bge-base to bge-small to fit Streamlit Community
+# Cloud's ~1GB RAM limit reliably. If you deploy somewhere with more RAM
+# (Render, Railway, your own VPS), you can switch back to
+# "BAAI/bge-base-en-v1.5" for slightly better retrieval quality.
+GROQ_MODEL_NAME = "llama-3.3-70b-versatile"
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 150
+TOP_K = 10
 
-app = FastAPI(title="Z1 RAG Chatbot API")
-
-
-# =========================================================
-# CORS
-# =========================================================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# =========================================================
-# FILE PATHS
-# =========================================================
-
-PDF_PATH = "sets of miniapp.pdf"
-CHROMA_PATH = "./chroma_db_bge"
-
-
-# =========================================================
-# EMBEDDING MODEL
-# Same as your Colab code
-# =========================================================
-
-embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-base-en-v1.5"
-)
-
-
-# =========================================================
-# LOAD / CREATE CHROMA
-# Same chunking as your Colab:
-# chunk_size = 800
-# chunk_overlap = 150
-# =========================================================
-
-if os.path.exists(CHROMA_PATH):
-
-    print("Loading existing ChromaDB...")
-
-    vectorstore = Chroma(
-        persist_directory=CHROMA_PATH,
-        embedding_function=embedding_model
-    )
-
-else:
-
-    print("Creating ChromaDB from PDF...")
-
-    loader = PyPDFLoader(PDF_PATH)
-
-    documents = loader.load()
-
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=150
-    )
-
-    split_docs = text_splitter.split_documents(documents)
-
-    print("Total chunks:", len(split_docs))
-
-    vectorstore = Chroma.from_documents(
-        documents=split_docs,
-        embedding=embedding_model,
-        persist_directory=CHROMA_PATH
-    )
-
-    print("ChromaDB created successfully.")
-
-
-# =========================================================
-# RETRIEVER
-# Same as your Colab code: k = 10
-# =========================================================
-
-retriever = vectorstore.as_retriever(
-    search_kwargs={"k": 10}
-)
-
-
-# =========================================================
-# GROQ LLM
-# Same model and temperature as your Colab
-# API key comes from Render environment variable
-# =========================================================
-
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=os.environ["GROQ_API_KEY"],
-    temperature=0.3
-)
-
-
-# =========================================================
-# REQUEST MODEL
-# =========================================================
-
-class ChatRequest(BaseModel):
-    query: str
-
-
-# =========================================================
-# RAG FUNCTION
-# =========================================================
-
-def ask_rag(query):
-
-    # Retrieve top 10 relevant documents
-    docs = retriever.invoke(query)
-
-    # Create context exactly like your Colab
-    context = "\n\n".join(
-        [doc.page_content for doc in docs]
-    )
-
-    # =====================================================
-    # YOUR ORIGINAL PROMPT
-    # =====================================================
-
-    prompt = """
+PROMPT_TEMPLATE = """
 You are an AI Assistant for the Z1 Super App.
 
 Your task is to answer ONLY from the provided context.
@@ -148,13 +47,11 @@ Your task is to answer ONLY from the provided context.
 Rules:
 1. Use only the given context.
 2. Do not make up information.
-3. If the answer is clearly available in the context.
+3. If the answer is clearly available in the context, answer it.
 If the answer is not available in the context, reply:
 "I could not find this information in the provided documents."
-
 4. If the question is unrelated to the Z1 Super App or its Mini Apps, reply:
    "This is not the correct question. Please ask a question related to the Z1 Super App or its Mini Apps."
-
 5. Keep answers clear and well-structured.
 6. Use bullet points whenever appropriate.
 
@@ -172,22 +69,6 @@ Key features include:
 - NDA Check-In
 - Community Reaction Hub
 
-Example 3
-question :
-What is the core feature of First Look mini app?
-
-Answer
-Core Features & User Journey
-• The Vault: A high-security digital screening room where upcoming content is hosted
-for a limited window (e.g., 24–48 hours before the global premiere).
-• ACR Redemption: A seamless "Pay-to-Unlock" mechanism where users spend
-their accumulated ACRs to gain entry to specific previews.
-• NDA Check-In: A lightweight, gamified "Digital Agreement" that reinforces the
-exclusivity of the content, encouraging users not to leak spoilers.
-• Community Reaction Hub: A dedicated space for "First Look" viewers to discuss
-their theories and reactions, creating a buzz that spills over into the broader app
-once the content goes live.
-
 Example 2
 Question:
 What are the stakeholder benefits of the First Look mini app?
@@ -196,7 +77,6 @@ Answer:
 Stakeholder Benefits:
 
 Z1 Users
-
 Key Benefits
 Exclusivity: Provides social currency and "bragging rights."
 Utility: Gives a tangible, high-value way to spend earned ACRs.
@@ -210,11 +90,11 @@ who generate organic hype.
 Z1 Platform
 Retention: Increases daily active usage as members check for
 new "drops."
-
 Economy Stability: Circulates and burns ACRs, maintaining
-the health of the app’s internal economy.
+the health of the app's internal economy.
 
-Advertisers/Sponsors High-Intent Audience: Provides access to the most engaged
+Advertisers/Sponsors
+High-Intent Audience: Provides access to the most engaged
 segments of the user base for targeted brand placements or
 "Presented by" credits.
 
@@ -225,34 +105,19 @@ What is the In-Episode Easter Egg Hunt?
 Answer:
 The In-Episode Easter Egg Hunt is a mini app that lets users search for hidden symbols or objects while watching newly released episodes. Users who find them first can earn Z1 jackpot rewards.
 
- activities
-- Completing challenges
-
-Example 5
+Example 4
 Question:
 Who is the CEO of Microsoft?
 
 Answer:
 Please ask a question related to the Z1 Super App or its Mini Apps.
 
-Example 6
+Example 5
 Question:
 What is the subscription price of Z1 Premium?
 
 Answer:
 I could not find this information in the provided documents.
-
-Example 7
-Question:
-What is the operational highlight of First Look mini app?
-
-Answer
-Security: Watermarking technology can be integrated to ensure that if content is
-leaked, the source can be identified, protecting the intellectual property of content
-partners.
-
-• Scalability: The architecture allows for everything from 30-second "sneak peeks" to
-full-length pilot episodes, making it adaptable for various content genres.
 
 Context:
 {context}
@@ -263,41 +128,128 @@ User Question:
 Answer:
 """
 
-    # Fill context and user query
-    prompt = prompt.format(
-        context=context,
-        query=query
+
+# --------------------------------------------------------------------------
+# CACHED RESOURCES
+# --------------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading embedding model (first run only, can take a minute)...")
+def get_embedding_model():
+    return HuggingFaceEmbeddings(model_name=EMBED_MODEL_NAME)
+
+
+@st.cache_resource(show_spinner="Building knowledge base from PDF...")
+def build_vectorstore(pdf_path: str, force_rebuild: bool = False):
+    embedding_model = get_embedding_model()
+
+    if force_rebuild and os.path.exists(PERSIST_DIR):
+        shutil.rmtree(PERSIST_DIR)
+
+    if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
+        # Reuse an already-built vector store instead of re-embedding every restart
+        return Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding_model)
+
+    loader = PyPDFLoader(pdf_path)
+    documents = loader.load()
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
     )
+    split_docs = splitter.split_documents(documents)
 
-    # Call LLM
-    response = llm.invoke(prompt)
+    vectorstore = Chroma.from_documents(
+        documents=split_docs,
+        embedding=embedding_model,
+        persist_directory=PERSIST_DIR,
+    )
+    return vectorstore
 
+
+def get_llm():
+    # Never hardcode the key in source. Set it as an environment variable
+    # or, on Streamlit Community Cloud, in the app's "Secrets" panel.
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        try:
+            api_key = st.secrets["GROQ_API_KEY"]
+        except Exception:
+            api_key = None
+
+    if not api_key:
+        st.error(
+            "GROQ_API_KEY is not set. Add it as an environment variable "
+            "(local run) or under Settings → Secrets (Streamlit Cloud) "
+            "before using the app."
+        )
+        st.stop()
+
+    return ChatGroq(model=GROQ_MODEL_NAME, api_key=api_key, temperature=0.3)
+
+
+def answer_question(query: str, retriever, llm) -> str:
+    docs = retriever.invoke(query)
+    context = "\n\n".join(doc.page_content for doc in docs)
+    filled_prompt = PROMPT_TEMPLATE.format(context=context, query=query)
+    response = llm.invoke(filled_prompt)
     return response.content
 
 
-# =========================================================
-# CHAT API
-# This is what your HTML frontend will call
-# =========================================================
+# --------------------------------------------------------------------------
+# SIDEBAR — knowledge base source
+# --------------------------------------------------------------------------
+st.sidebar.title("📚 Knowledge Base")
 
-@app.post("/api/chat")
-def chat(request: ChatRequest):
+os.makedirs(DATA_DIR, exist_ok=True)
 
-    answer = ask_rag(request.query)
+if not os.path.exists(PDF_PATH):
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload the Z1 mini-apps PDF", type=["pdf"]
+    )
+    if uploaded_file is not None:
+        with open(PDF_PATH, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.rerun()
+else:
+    st.sidebar.success("PDF loaded ✅")
+    if st.sidebar.button("🔁 Rebuild knowledge base"):
+        build_vectorstore(PDF_PATH, force_rebuild=True)
+        st.rerun()
 
-    return {
-        "answer": answer
-    }
+if st.sidebar.button("🗑️ Clear chat history"):
+    st.session_state.messages = []
+    st.rerun()
 
+# --------------------------------------------------------------------------
+# MAIN
+# --------------------------------------------------------------------------
+st.title("🤖 Z1 Super App Assistant")
+st.caption("Ask questions about the Z1 Super App and its mini apps.")
 
-# =========================================================
-# HEALTH CHECK
-# =========================================================
+if not os.path.exists(PDF_PATH):
+    st.info("👈 Upload the source PDF from the sidebar to get started.")
+    st.stop()
 
-@app.get("/")
-def home():
+vectorstore = build_vectorstore(PDF_PATH)
+retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+llm = get_llm()
 
-    return {
-        "status": "running",
-        "message": "Z1 RAG Backend is working"
-    }
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+user_query = st.chat_input("Ask about the Z1 Super App or its Mini Apps...")
+
+if user_query:
+    st.session_state.messages.append({"role": "user", "content": user_query})
+    with st.chat_message("user"):
+        st.markdown(user_query)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            answer = answer_question(user_query, retriever, llm)
+        st.markdown(answer)
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})
