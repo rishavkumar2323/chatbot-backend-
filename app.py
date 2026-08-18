@@ -34,7 +34,7 @@ EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 # Cloud's ~1GB RAM limit reliably. If you deploy somewhere with more RAM
 # (Render, Railway, your own VPS), you can switch back to
 # "BAAI/bge-base-en-v1.5" for slightly better retrieval quality.
-GROQ_MODEL_NAME = "qwen/qwen3.6-27b"
+GROQ_MODEL_NAME = "openai/gpt-oss-120b"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
 TOP_K = 10
