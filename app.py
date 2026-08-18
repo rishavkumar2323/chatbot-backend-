@@ -129,6 +129,32 @@ write reviews for Zee shows. Other users can reward helpful reviews by tipping Z
 Top-rated reviewers receive the "Z1 Verified Critics" designation, and their reviews and 
 ratings are featured more prominently within the platform. 
 
+Example 7 
+Question:
+
+what is Strategic Rationale of Celebrity Masterclasses (Z1 Learn) mini apps ?
+
+Answer :
+1. Premium Learning 
+Provides access to exclusive educational content from Zee's talent network. 
+
+2. Token Utility 
+Allows users to spend Z1 tokens for educational content. 
+
+3. Value Creation 
+Creates a premium value opportunity through exclusive learning experiences.
+
+Example 8. 
+Question :
+Stakeholder Benefits of Celebrity Masterclasses (Z1 Learn) mini apps ?
+
+Answer :
+Z1 Users :
+Learn from Zee's creative professionals through exclusive courses 
+purchased with Z1 tokens. 
+Z1 Platform :
+Creates premium educational content while increasing the utility of Z1 
+tokens. 
 
 Context:
 {context}
@@ -205,7 +231,7 @@ def get_llm():
         )
         st.stop()
  
-    return ChatGroq(model=GROQ_MODEL_NAME, api_key=api_key, temperature=0.1)
+    return ChatGroq(model=GROQ_MODEL_NAME, api_key=api_key, temperature=0)
  
  
 def answer_question(query: str, retriever, llm) -> str:
