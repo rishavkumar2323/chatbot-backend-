@@ -118,7 +118,16 @@ What is the subscription price of Z1 Premium?
  
 Answer:
 I could not find this information in the provided documents.
- 
+
+Example 6 
+Question: 
+Define The Critic's Corner mini apps ?
+
+Answer :
+The "The Critic's Corner" is a community-driven review platform where Z1 holders can 
+write reviews for Zee shows. Other users can reward helpful reviews by tipping Z1 tokens. 
+Top-rated reviewers receive the "Z1 Verified Critics" designation, and their reviews and 
+ratings are featured more prominently within the platform. 
 Context:
 {context}
  
