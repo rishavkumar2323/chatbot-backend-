@@ -194,7 +194,7 @@ def get_llm():
         )
         st.stop()
  
-    return ChatGroq(model=GROQ_MODEL_NAME, api_key=api_key, temperature=0.3)
+    return ChatGroq(model=GROQ_MODEL_NAME, api_key=api_key, temperature=0.1)
  
  
 def answer_question(query: str, retriever, llm) -> str:
