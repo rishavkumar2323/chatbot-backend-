@@ -1,4 +1,4 @@
-# --------------------------------------------------------------------------
+'''# --------------------------------------------------------------------------
 # Streamlit Community Cloud ships an old system sqlite3 (< 3.35), but
 # chromadb needs a newer one. This swaps in pysqlite3-binary's sqlite
 # before chromadb (via langchain_chroma) gets imported. Safe to keep for
@@ -301,4 +301,269 @@ if user_query:
         st.markdown(answer)
  
     st.session_state.messages.append({"role": "assistant", "content": answer})
+
+
+'''
+
+
+
+
+
+
+
+
+
+
+
+import os
+import re
+
+import streamlit as st
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_groq import ChatGroq
+
+# --------------------------------------------------------------------------
+# CONFIG
+# (kept exactly as in the original notebook: bge-large embeddings,
+# chunk_size 2000 / overlap 300, FAISS vectorstore, k=10)
+# --------------------------------------------------------------------------
+st.set_page_config(page_title="Z1 Super App Assistant", page_icon="🤖", layout="wide")
+
+DATA_DIR = "data"
+PDF_PATH = os.path.join(DATA_DIR, "sets of miniapp.pdf")  # must match notebook's PDF_NAME
+EMBED_MODEL_NAME = "BAAI/bge-large-en-v1.5"
+GROQ_MODEL_NAME = "openai/gpt-oss-120b"
+CHUNK_SIZE = 2000
+CHUNK_OVERLAP = 300
+TOP_K = 10
+
+NAME_PATTERN = re.compile(r'Mini-App:\s*\n?\s*"([^"\n]+)"')
+
+PROMPT_TEMPLATE = """
+You are "Z1 Super App Assistance," the official AI assistant for the Z1 Super App platform.
+
+## Core Rule — Grounded Responses Only
+You must answer strictly based on the dataset/content provided to you in this conversation or context.
+Do NOT:
+- Invent, expand, or add new points that are not explicitly present in the source dataset.
+- Split or merge existing points into more or fewer points than what exists in the original data.
+- Add sub-bullets, categories, or elaborations that are not directly stated in the source.
+- Rephrase content in a way that changes its original meaning or scope.
+
+You MAY:
+- Reformat the existing dataset content for better readability (bullets, headings, spacing).
+- Use appropriate wording/tone to present the same information clearly.
+- Lightly polish grammar while preserving the exact number and meaning of original points.
+
+If the dataset has 3 points, your output must reflect those same 3 points — not more, not less.
+
+## Greeting Handling
+If the user's message is a greeting (e.g., "hi", "hello", "hey", "good morning", etc.) with no actual question or request:
+- Respond warmly and briefly, e.g.:
+  "Hello! 👋 I'm Z1 Super App Assistance. How can I help you today?"
+- Do not pull in any dataset content unless the user asks something specific.
+
+## Handling Unrelated Questions
+If the user's question is NOT related to the provided dataset/topic:
+- Do NOT attempt to answer from general knowledge.
+- Do NOT guess or fabricate an answer.
+- Respond with:
+  "Please ask a relatable question."
+  (You may soften this slightly, e.g., "That seems outside what I can help with here — please ask a relatable question related to [topic/dataset].")
+
+## Response Format
+- Keep responses clear, concise, and structured using bullet points or short paragraphs where appropriate.
+- Do not add a "summary" or "overall" concluding paragraph unless the original dataset itself contains one.
+- Never present assumptions, inferred strategy, or marketing framing that isn't explicitly part of the source data.
+
+## Identity
+- If asked who you are, respond: "I'm Z1 Super App Assistance, here to help you with information related to [your platform/dataset]."
+- Do not claim to be built by any external AI company unless explicitly instructed to.
+
+Context:
+{context}
+
+User Question:
+{query}
+
+Answer:
+"""
+
+
+# --------------------------------------------------------------------------
+# CACHED RESOURCES
+# --------------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading embedding model (first run only, can take a minute)...")
+def get_embedding_model():
+    # BGE-large is an *asymmetric* retrieval model: only the query needs the
+    # instruction prefix at search time — documents are embedded as-is.
+    return HuggingFaceEmbeddings(model_name=EMBED_MODEL_NAME)
+
+
+@st.cache_resource(show_spinner="Building knowledge base from PDF...")
+def build_vectorstore(pdf_path: str):
+    embedding_model = get_embedding_model()
+
+    # ---- Load the PDF ----
+    loader = PyPDFLoader(pdf_path)
+    documents = loader.load()
+
+    # ---- Section-aware chunking ----
+    # Join all pages into one string so a section split across two PDF
+    # pages isn't lost
+    full_text = "\n".join([doc.page_content for doc in documents])
+
+    # Split on every "Mini-App:" heading. (?=...) is a lookahead, so the
+    # heading itself stays attached to the section that follows it.
+    raw_sections = re.split(r'(?=Mini-App:)', full_text)
+    raw_sections = [s.strip() for s in raw_sections if s.strip()]
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+    )
+
+    split_docs = []
+    for section in raw_sections:
+        match = NAME_PATTERN.search(section)
+        if not match:
+            # Section doesn't have a clean "Mini-App: "Name"" heading —
+            # skip rather than silently mislabel it with the wrong
+            # mini-app name.
+            continue
+        mini_app_name = match.group(1).strip()
+
+        chunks = text_splitter.split_text(section)
+        for chunk in chunks:
+            split_docs.append(
+                Document(
+                    page_content=chunk,
+                    metadata={"mini_app": mini_app_name}
+                )
+            )
+
+    # ---- Remove duplicate chunks ----
+    seen = set()
+    deduped_docs = []
+    for d in split_docs:
+        if d.page_content not in seen:
+            seen.add(d.page_content)
+            deduped_docs.append(d)
+    split_docs = deduped_docs
+
+    # ---- Vector store ----
+    vectorstore = FAISS.from_documents(
+        documents=split_docs,
+        embedding=embedding_model,
+    )
+    return vectorstore
+
+
+def get_llm():
+    # Never hardcode the key in source. Set it as an environment variable
+    # or, on Streamlit Community Cloud, in the app's "Secrets" panel as
+    # GROQ_API_KEY = "..."
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        try:
+            api_key = st.secrets["GROQ_API_KEY"]
+        except Exception:
+            api_key = None
+
+    if not api_key:
+        st.error(
+            "GROQ_API_KEY is not set. Add it as an environment variable "
+            "(local run) or under Settings → Secrets (Streamlit Cloud) "
+            "before using the app."
+        )
+        st.stop()
+
+    return ChatGroq(
+        model=GROQ_MODEL_NAME,
+        api_key=api_key,
+        temperature=0.2,
+        reasoning_format="hidden",  # hides the internal <think>...</think>
+                                     # block so only the final answer prints
+    )
+
+
+def answer_question(query: str, retriever, llm) -> str:
+    # query_prefixed is only used for retrieval (BGE needs the instruction
+    # prefix on the query side, not on documents). The plain query (no
+    # prefix) is still what goes to the LLM.
+    query_prefixed = "Represent this sentence for searching relevant passages: " + query
+    docs = retriever.invoke(query_prefixed)
+    context = "\n\n".join(doc.page_content for doc in docs)
+    filled_prompt = PROMPT_TEMPLATE.format(context=context, query=query)
+    response = llm.invoke(filled_prompt)
+    return response.content
+
+
+# --------------------------------------------------------------------------
+# SIDEBAR — knowledge base source
+# --------------------------------------------------------------------------
+st.sidebar.title("📚 Knowledge Base")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+if not os.path.exists(PDF_PATH):
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload the Z1 mini-apps PDF", type=["pdf"]
+    )
+    if uploaded_file is not None:
+        with open(PDF_PATH, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.rerun()
+else:
+    st.sidebar.success("PDF loaded ✅")
+    if st.sidebar.button("🔁 Rebuild knowledge base"):
+        build_vectorstore.clear()
+        st.rerun()
+
+if st.sidebar.button("🗑️ Clear chat history"):
+    st.session_state.messages = []
+    st.rerun()
+
+# --------------------------------------------------------------------------
+# MAIN
+# --------------------------------------------------------------------------
+st.title("🤖 Z1 Super App Assistant")
+st.caption("Ask questions about the Z1 Super App and its mini apps.")
+
+if not os.path.exists(PDF_PATH):
+    st.info("👈 Upload the source PDF from the sidebar to get started.")
+    st.stop()
+
+vectorstore = build_vectorstore(PDF_PATH)
+retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+llm = get_llm()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+user_query = st.chat_input("Ask about the Z1 Super App or its Mini Apps...")
+
+if user_query:
+    st.session_state.messages.append({"role": "user", "content": user_query})
+    with st.chat_message("user"):
+        st.markdown(user_query)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            answer = answer_question(user_query, retriever, llm)
+        st.markdown(answer)
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+
+
+
  
